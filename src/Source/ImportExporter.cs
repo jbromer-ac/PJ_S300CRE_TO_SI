@@ -89,7 +89,6 @@ public class ImportExporter
                 {
                     var cell = worksheet.Cell(1, col + 1);
                     cell.Value = reader.GetName(col);
-                    cell.Style.Font.Bold = true;
                     cell.Style.Fill.BackgroundColor = XLColor.FromHtml("#BFBFBF");
                     cell.Style.Border.TopBorder    = XLBorderStyleValues.Thin;
                     cell.Style.Border.BottomBorder = XLBorderStyleValues.Thin;
@@ -127,6 +126,8 @@ public class ImportExporter
 
                 reader.Close();
 
+                worksheet.Columns().AdjustToContents();
+                worksheet.RangeUsed()!.SetAutoFilter();
                 worksheet.SheetView.FreezeRows(1);
 
                 workbook.SaveAs(outputPath);
