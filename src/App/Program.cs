@@ -2,11 +2,13 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using S300CRE_to_SI.Source;
 
+
 if (args.Length == 0)
 {
-    Console.WriteLine("Usage: S300CRE_to_SI.App <operation>");
+    Console.WriteLine("Usage: S300CRE_to_SI.App <operation> [args]");
     Console.WriteLine("Operations:");
-    Console.WriteLine("  initialize    Run initial mapping setup (01_Initial_Mappings). Runs once per client database.");
+    Console.WriteLine("  initialize                        Run initial mapping setup (01_Initial_Mappings). Runs once per client database.");
+    Console.WriteLine("  apply-mappings <path-to-xlsx>     Apply mappings from an ETL mapping document to the database.");
     return;
 }
 
@@ -58,6 +60,16 @@ switch (operation)
 {
     case "initialize":
         RunInitialize(db, runner, scriptsFolderPath);
+        break;
+
+    case "apply-mappings":
+        if (args.Length < 2)
+        {
+            Console.WriteLine("Usage: apply-mappings <path-to-xlsx>");
+            break;
+        }
+        var applier = new MappingApplier(db);
+        applier.Apply(args[1]);
         break;
 
     default:
