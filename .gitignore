@@ -10,6 +10,9 @@ appsettings.local.json
 .idea/
 *.user
 
+# Generated import files
+output/
+
 # OS
 Thumbs.db
 .DS_Store
