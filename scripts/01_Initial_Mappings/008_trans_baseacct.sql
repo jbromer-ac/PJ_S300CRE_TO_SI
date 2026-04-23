@@ -1,0 +1,15 @@
+--ACCOUNT TRANSLATION
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'MAP' AND TABLE_NAME = 'T_TRANS_BASEACCT') BEGIN
+CREATE TABLE MAP.T_TRANS_BASEACCT (	[Data_Folder_Id] [varchar](100) NULL, [Legacy_Base_Account] [varchar](100) NULL, [New_Base_Account] [varchar](100) NULL, [Note] [varchar](100) NULL, [ACCT_MATCH_TYPE] [nvarchar](50) NULL);
+INSERT INTO MAP.T_TRANS_BASEACCT ([Data_Folder_Id], [Legacy_Base_Account], [New_Base_Account], [Note], [ACCT_MATCH_TYPE])
+SELECT DISTINCT
+	COA.Data_Folder_Id,
+	COA.BaseAccount,
+	COA.BaseAccount,
+	'',
+	'BASE'
+FROM
+	[MAP].[T_MASTER_ACCOUNT] COA
+	--LEFT JOIN [s300].[GLM_MASTER__ACCOUNT_FORMAT] COAF ON COA.Data_Folder_Id = COAF.Data_Folder_Id;
+END
+GO
