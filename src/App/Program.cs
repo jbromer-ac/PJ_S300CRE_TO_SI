@@ -9,6 +9,7 @@ if (args.Length == 0)
     Console.WriteLine("Operations:");
     Console.WriteLine("  initialize                        Run initial mapping setup (01_Initial_Mappings). Runs once per client database.");
     Console.WriteLine("  apply-mappings <path-to-xlsx>     Apply mappings from an ETL mapping document to the database.");
+    Console.WriteLine("  generate-imports <output-folder>  Generate import .xlsx files from SQL scripts in 02_Import_Template_Definitions.");
     return;
 }
 
@@ -70,6 +71,16 @@ switch (operation)
         }
         var applier = new MappingApplier(db);
         applier.Apply(args[1]);
+        break;
+
+    case "generate-imports":
+        if (args.Length < 2)
+        {
+            Console.WriteLine("Usage: generate-imports <output-folder>");
+            break;
+        }
+        var exporter = new ImportExporter(db);
+        exporter.Export(scriptsFolderPath, args[1]);
         break;
 
     default:
