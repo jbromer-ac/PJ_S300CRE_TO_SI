@@ -8,6 +8,7 @@ if (args.Length == 0)
     Console.WriteLine("Usage: S300CRE_to_SI.App <operation> [args] --database <name>");
     Console.WriteLine("Operations:");
     Console.WriteLine("  initialize                        Run initial mapping setup (01_Initial_Mappings). Runs once per client database.");
+    Console.WriteLine("  teardown                          Drop all MAP schema objects created by initialize. Drops schema too if nothing else remains.");
     Console.WriteLine("  apply-mappings <path-to-xlsx>     Apply mappings from an ETL mapping document to the database.");
     Console.WriteLine("  generate-imports <output-folder>  Generate import .xlsx files from SQL scripts in 02_Import_Template_Definitions.");
     Console.WriteLine();
@@ -71,6 +72,10 @@ switch (operation)
         RunInitialize(db, runner, scriptsFolderPath);
         break;
 
+    case "teardown":
+        RunTeardown(db, databaseName);
+        break;
+
     case "apply-mappings":
         if (args.Length < 2)
         {
@@ -94,6 +99,91 @@ switch (operation)
     default:
         Console.WriteLine($"Unknown operation: '{args[0]}'");
         break;
+}
+
+static void RunTeardown(DatabaseConnection db, string databaseName)
+{
+    // Check MAP schema exists
+    using var checkCmd = new SqlCommand("SELECT COUNT(1) FROM sys.schemas WHERE name = 'MAP'", db.GetConnection());
+    if ((int)checkCmd.ExecuteScalar()! == 0)
+    {
+        Console.WriteLine("MAP schema does not exist. Nothing to tear down.");
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"WARNING: This will drop all MAP schema objects created by initialize on [{databaseName}].");
+    Console.Write("Type the database name to confirm: ");
+    var confirmation = Console.ReadLine()?.Trim();
+
+    if (!string.Equals(confirmation, databaseName, StringComparison.OrdinalIgnoreCase))
+    {
+        Console.WriteLine("Confirmation did not match. Aborting.");
+        return;
+    }
+
+    var views = new[]
+    {
+        "[MAP].[T_MASTER_ACCOUNT]",
+        "[MAP].[T_MASTER_EMPLOYEE]",
+    };
+
+    var tables = new[]
+    {
+        "[MAP].[T_TRANS_DATA_FOLDER]",
+        "[MAP].[T_TRANS_JOB]",
+        "[MAP].[T_TRANS_CUSTOMER]",
+        "[MAP].[T_TRANS_VENDOR]",
+        "[MAP].[T_TRANS_COST_CODE]",
+        "[MAP].[T_TRANS_COST_TYPE]",
+        "[MAP].[T_TRANS_BASEACCT]",
+        "[MAP].[T_TRANS_ENTITY]",
+        "[MAP].[T_TRANS_BATCH_COMBINE]",
+        "[MAP].[T_TRANS_EMPLOYEE]",
+        "[MAP].[T_STATE]",
+        "[MAP].[T_1099_TYPE]",
+        "[MAP].[T_TRANS_LOCATION]",
+        "[MAP].[T_TRANS_DEPARTMENT]",
+        "[MAP].[E_USEFUL_FIELDS]",
+        "[MAP].[T_TRANS_CLASS]",
+        "[MAP].[T_TRANS_ITEM]",
+        "[MAP].[T_TRANS_WAREHOUSE]",
+    };
+
+    Console.WriteLine();
+
+    foreach (var view in views)
+    {
+        using var cmd = new SqlCommand($"DROP VIEW IF EXISTS {view}", db.GetConnection());
+        cmd.ExecuteNonQuery();
+        Console.WriteLine($"  Dropped view: {view}");
+    }
+
+    foreach (var table in tables)
+    {
+        using var cmd = new SqlCommand($"DROP TABLE IF EXISTS {table}", db.GetConnection());
+        cmd.ExecuteNonQuery();
+        Console.WriteLine($"  Dropped table: {table}");
+    }
+
+    // Drop schema only if no other objects remain
+    using var countCmd = new SqlCommand(
+        "SELECT COUNT(1) FROM sys.objects WHERE schema_id = SCHEMA_ID('MAP')",
+        db.GetConnection());
+    var remaining = (int)countCmd.ExecuteScalar()!;
+
+    if (remaining == 0)
+    {
+        using var dropSchema = new SqlCommand("DROP SCHEMA [MAP]", db.GetConnection());
+        dropSchema.ExecuteNonQuery();
+        Console.WriteLine("  Dropped schema: MAP");
+    }
+    else
+    {
+        Console.WriteLine($"  MAP schema retained ({remaining} manually created object(s) remain).");
+    }
+
+    Console.WriteLine("Teardown complete.");
 }
 
 static void RunInitialize(DatabaseConnection db, ScriptRunner runner, string scriptsFolderPath)
