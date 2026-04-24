@@ -12,7 +12,7 @@ public class ImportExporter
         _db = db;
     }
 
-    public void Export(string scriptsFolderPath, string outputFolderPath)
+    public void Export(string scriptsFolderPath, string outputFolderPath, string databaseName)
     {
         var importScriptsPath = Path.Combine(scriptsFolderPath, "02_Import_Template_Definitions");
 
@@ -44,8 +44,14 @@ public class ImportExporter
         {
             var scriptName = Path.GetFileNameWithoutExtension(scriptPath);
 
-            // Find the next sequence number for this script+date combination
-            var prefix = $"{scriptName} (V{dateStamp} ";
+            // Build output name: "001_import_employees" -> "001_Migration-Schimenti_employees"
+            var parts = scriptName.Split("_import_", 2);
+            var baseName = parts.Length == 2
+                ? $"{parts[0]}_{databaseName}_{parts[1]}"
+                : $"{scriptName}_{databaseName}";
+
+            // Find the next sequence number for this baseName+date+database combination
+            var prefix = $"{baseName} (V{dateStamp} ";
             var existingMax = Directory
                 .GetFiles(outputFolderPath, "*.xlsx")
                 .Select(Path.GetFileNameWithoutExtension)
@@ -59,7 +65,7 @@ public class ImportExporter
                 .Max();
 
             var seq = (existingMax + 1).ToString("000");
-            var outputFileName = $"{scriptName} (V{dateStamp} {seq}).xlsx";
+            var outputFileName = $"{baseName} (V{dateStamp} {seq}).xlsx";
             var outputPath = Path.Combine(outputFolderPath, outputFileName);
 
             Console.WriteLine($"\nProcessing: {Path.GetFileName(scriptPath)}");

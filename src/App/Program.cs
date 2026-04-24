@@ -88,7 +88,7 @@ switch (operation)
             break;
         }
         var exporter = new ImportExporter(db);
-        exporter.Export(scriptsFolderPath, args[1]);
+        exporter.Export(scriptsFolderPath, args[1], databaseName);
         break;
 
     default:
