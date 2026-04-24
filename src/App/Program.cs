@@ -11,6 +11,7 @@ if (args.Length == 0)
     Console.WriteLine("  teardown                          Drop all MAP schema objects created by initialize. Drops schema too if nothing else remains.");
     Console.WriteLine("  apply-mappings <path-to-xlsx>     Apply mappings from an ETL mapping document to the database.");
     Console.WriteLine("  generate-imports <output-folder>  Generate import .xlsx files from SQL scripts in 02_Import_Template_Definitions.");
+    Console.WriteLine("  export-mappings <output-folder>   Export current mapping tables to an ETL Mapping Document .xlsx file.");
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  --database <name>                 (Required) The database to connect to.");
@@ -74,6 +75,16 @@ switch (operation)
 
     case "teardown":
         RunTeardown(db, databaseName);
+        break;
+
+    case "export-mappings":
+        if (args.Length < 2)
+        {
+            Console.WriteLine("Usage: export-mappings <output-folder>");
+            break;
+        }
+        var mappingExporter = new MappingExporter(db);
+        mappingExporter.Export(args[1], databaseName);
         break;
 
     case "apply-mappings":
