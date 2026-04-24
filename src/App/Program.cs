@@ -5,11 +5,14 @@ using S300CRE_to_SI.Source;
 
 if (args.Length == 0)
 {
-    Console.WriteLine("Usage: S300CRE_to_SI.App <operation> [args]");
+    Console.WriteLine("Usage: S300CRE_to_SI.App <operation> [args] --database <name>");
     Console.WriteLine("Operations:");
     Console.WriteLine("  initialize                        Run initial mapping setup (01_Initial_Mappings). Runs once per client database.");
     Console.WriteLine("  apply-mappings <path-to-xlsx>     Apply mappings from an ETL mapping document to the database.");
     Console.WriteLine("  generate-imports <output-folder>  Generate import .xlsx files from SQL scripts in 02_Import_Template_Definitions.");
+    Console.WriteLine();
+    Console.WriteLine("Options:");
+    Console.WriteLine("  --database <name>                 (Required) The database to connect to.");
     return;
 }
 
@@ -22,8 +25,13 @@ var config = new ConfigurationBuilder()
 var connectionString = config["ConnectionString"]
     ?? throw new InvalidOperationException("ConnectionString is missing from appsettings.json.");
 
-var databaseName = config["DatabaseName"]
-    ?? throw new InvalidOperationException("DatabaseName is missing from appsettings.json.");
+var dbFlagIndex = Array.IndexOf(args, "--database");
+if (dbFlagIndex < 0 || dbFlagIndex + 1 >= args.Length)
+{
+    Console.WriteLine("ERROR: --database <name> is required.");
+    return;
+}
+var databaseName = args[dbFlagIndex + 1];
 
 var scriptsFolderPath = config["ScriptsFolderPath"]
     ?? throw new InvalidOperationException("ScriptsFolderPath is missing from appsettings.json.");
@@ -39,7 +47,7 @@ if (!Path.IsPathRooted(scriptsFolderPath))
 
 connectionString += $"User Id={userId};Password={password};";
 
-Console.WriteLine("Connecting to database...");
+Console.WriteLine($"Connecting to database: {databaseName}...");
 
 using var db = new DatabaseConnection(connectionString);
 
