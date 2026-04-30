@@ -50,7 +50,7 @@ CROSS APPLY (
     SELECT
         -- PrefixC (if exists)
         PrefixC = CASE
-                    WHEN AM.Account_Prefix_ABC_Length = 0 THEN ''
+                    WHEN AM.Account_Prefix_ABC_Length <= AM.Account_Prefix_AB_Length THEN ''
                     ELSE RIGHT(B.PrefixPart, AM.Account_Prefix_ABC_Length - AM.Account_Prefix_AB_Length)
                   END
 ) C
@@ -66,7 +66,10 @@ CROSS APPLY (
 CROSS APPLY (
     SELECT
         -- PrefixB
-        PrefixB = RIGHT(P2.PrefixPart2, AM.Account_Prefix_AB_Length - AM.Account_Prefix_A_Length)
+        PrefixB = CASE
+                    WHEN AM.Account_Prefix_AB_Length <= AM.Account_Prefix_A_Length THEN ''
+                    ELSE RIGHT(P2.PrefixPart2, AM.Account_Prefix_AB_Length - AM.Account_Prefix_A_Length)
+                  END
 ) B2
 
 CROSS APPLY (
