@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using ClosedXML.Excel;
 using Microsoft.Data.SqlClient;
 
@@ -39,6 +40,7 @@ public class ImportExporter
         }
 
         var dateStamp = DateTime.Today.ToString("yyyy-MM-dd");
+        var createdFiles = new List<string>();
 
         foreach (var scriptPath in scripts)
         {
@@ -137,6 +139,7 @@ public class ImportExporter
                 worksheet.SheetView.FreezeRows(1);
 
                 workbook.SaveAs(outputPath);
+                createdFiles.Add(outputPath);
                 Console.WriteLine($"  -> Saved: {outputFileName} ({rowNum - 2} rows)");
             }
             catch (Exception ex)
@@ -144,5 +147,20 @@ public class ImportExporter
                 Console.WriteLine($"  ERROR: {ex.Message}");
             }
         }
+
+        if (createdFiles.Count > 0)
+        {
+            var zipName = $"{databaseName}_imports (V{dateStamp}).zip";
+            var zipPath = Path.Combine(outputFolderPath, zipName);
+
+            if (File.Exists(zipPath)) File.Delete(zipPath);
+
+            using var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create);
+            foreach (var file in createdFiles)
+                zip.CreateEntryFromFile(file, Path.GetFileName(file));
+
+            Console.WriteLine($"\nZipped {createdFiles.Count} file(s) to: {zipName}");
+        }
     }
 }
+
