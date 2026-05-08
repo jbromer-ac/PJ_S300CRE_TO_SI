@@ -77,7 +77,7 @@ public class ImportExporter
                 using var workbook = new XLWorkbook();
                 var worksheet = workbook.Worksheets.Add("Import");
 
-                using var cmd = new SqlCommand(sql, _db.GetConnection());
+                using var cmd = new SqlCommand(sql, _db.GetConnection()) { CommandTimeout = 0 };
                 using var reader = cmd.ExecuteReader();
 
                 var columnCount = reader.FieldCount;
