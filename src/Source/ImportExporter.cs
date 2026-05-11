@@ -47,10 +47,21 @@ public class ImportExporter
             var scriptName = Path.GetFileNameWithoutExtension(scriptPath);
 
             // Build output name: "001_import_employees" -> "001_Migration-Schimenti_employees"
-            var parts = scriptName.Split("_import_", 2);
-            var baseName = parts.Length == 2
-                ? $"{parts[0]}_{databaseName}_{parts[1]}"
-                : $"{scriptName}_{databaseName}";
+            string baseName;
+            if (scriptName.Contains("_import_"))
+            {
+                var parts = scriptName.Split("_import_", 2);
+                baseName = $"{parts[0]}_{databaseName}_{parts[1]}";
+            }
+            else if (scriptName.Contains("_report_only_"))
+            {
+                var parts = scriptName.Split("_report_only_", 2);
+                baseName = $"{parts[0]}_{databaseName}_report_only_{parts[1]}";
+            }
+            else
+            {
+                baseName = $"{scriptName}_{databaseName}";
+            }
 
             // Find the next sequence number for this baseName+date+database combination
             var prefix = $"{baseName} (V{dateStamp} ";
