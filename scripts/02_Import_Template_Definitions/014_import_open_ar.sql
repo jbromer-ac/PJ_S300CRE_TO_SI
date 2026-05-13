@@ -1,284 +1,150 @@
---MODEL AS OF 05/05/2026 The customer translation was missing the customer DATA_FOLDER_ID in join
---OPEN AR IMPORT
-DECLARE @AgingDate DATE; --AS OF DATE
+-- OPEN AR IMPORT (WITH PROJECT ID + HEADER/DETAIL LINE NUMBERING)
+-- Same as XXX_import_open_ar_2.sql but with outer ROW_NUMBER() partition:
+--   Header columns (TRANSACTIONTYPE, DATE, GLPOSTINGDATE, DOCUMENTNO, CUSTOMER_ID,
+--                   TERMNAME, DATEDUE, STATE) are only populated on the first line per invoice.
+--   LINE_NO increments 1, 2, 3... per invoice.
+--   Detail columns are always populated.
+--
+-- Reconciliation method: ties to Sage 300 CRE "Aging Summary by Invoice" canned report
+--   Amount   (col N)  = SUM(ART.Amount + ART.Retainage) excl. Amount_Type 'Retainage released'
+--   Retainage (col AA) = SUM(ARA_ACTIVITY__ACTIVITY.Retainage_Held) per Status
+--                        (ARA naturally nets original withheld minus retainage-release adjustments)
+--
+-- Retainage breakdown DONOTIMPORT columns:
+--   LG_RET_NET  = net retainage outstanding (= col AA; withheld minus released)
+--   LG_RET_HELD = original retainage withheld on invoices (before any releases)
+--   LG_RET_REL  = cumulative retainage released/reduced (positive = released back)
+--   LG_RET_BIL  = retainage already billed to customer for collection
+
+DECLARE @AgingDate DATE;
 SET @AgingDate = (
-    SELECT CONVERT(DATE, F.FIELD_VALUE, 23)  -- 23 = yyyy-mm-dd
+    SELECT CONVERT(DATE, F.FIELD_VALUE, 23)
     FROM [MAP].[E_USEFUL_FIELDS] F
     WHERE F.FIELD_NAME = 'GL03_DETAIL_STOP');
 
-DECLARE @AgingBasis VARCHAR(50) = 'Accounting date'; --OPTIONS ARE 'Accounting date', 'Invoice date' OR 'Due date'
-DECLARE @IncludeRetainage BIT = 1; --Use 1 for TRUE, 2 for FALSE
-DECLARE @IncludeFinanceCharges BIT = 1; --Use 1 for TRUE, 2 for FALSE
-DECLARE @PrimaryID VARCHAR(50) = 'Invoice'; --OPTIONS ARE '' OR 'Invoice'
-
+WITH ART_BY_STATUS AS (
+    -- Net outstanding amount per invoice status, excluding Retainage released rows
+    SELECT
+        ACT.Customer,
+        ACT.Status_Type,
+        ACT.Status_Date,
+        ACT.Status_Seq,
+        ACT.Data_Folder_Id,
+        SUM(ACT.Amount + ACT.Retainage)                              AS Net_Amount,
+        MIN(ISNULL(ACT.Due_Date,        CONVERT(DATE,'1900-01-01'))) AS Due_Date,
+        MIN(ISNULL(ACT.Accounting_Date, CONVERT(DATE,'1900-01-01'))) AS Accounting_Date,
+        MAX(ACT.Job)                                                  AS Job
+    FROM [s300].[ART_CURRENT__TRANSACTION] ACT
+    WHERE ACT.Amount_Type <> 'Retainage released'
+      AND ISNULL(ACT.Accounting_Date, CONVERT(DATE,'1900-01-01')) <= @AgingDate
+    GROUP BY ACT.Customer, ACT.Status_Type, ACT.Status_Date, ACT.Status_Seq, ACT.Data_Folder_Id
+),
+ARA_BY_STATUS AS (
+    -- Retainage balances per invoice status
+    -- Summing all activity types means releases (positive Retainage_Held) reduce the net total
+    SELECT
+        ARA.Customer,
+        ARA.Status_Type,
+        ARA.Status_Date,
+        ARA.Status_Seq,
+        ARA.Data_Folder_Id,
+        SUM(ARA.Retainage_Held)                                                                     AS Retainage_Net,
+        SUM(CASE WHEN ARA.Activity_Type = 'Invoice'            THEN ARA.Retainage_Held ELSE 0 END)  AS Retainage_Held_Gross,
+        SUM(CASE WHEN ARA.Activity_Type = 'Retainage released' THEN ARA.Retainage_Held ELSE 0 END)  AS Retainage_Released,
+        SUM(ARA.Retainage_Billed)                                                                   AS Retainage_Billed
+    FROM [s300].[ARA_ACTIVITY__ACTIVITY] ARA
+    GROUP BY ARA.Customer, ARA.Status_Type, ARA.Status_Date, ARA.Status_Seq, ARA.Data_Folder_Id
+)
 SELECT
-	T.DONOTIMPORT1 AS DONOTIMPORT,
-	T.DONOTIMPORT13 AS DONOTIMPORT,
-	CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.TRANSACTIONTYPE ELSE '' END AS TRANSACTIONTYPE,
-	CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.[DATE] ELSE '' END AS [DATE],
-	CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.GLPOSTINGDATE ELSE '' END AS GLPOSTINGDAT,
-	CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.DOCUMENTNO ELSE '' END AS DOCUMENTNO,
-	CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.CUSTOMER_ID ELSE '' END AS CUSTOMER_ID,
-	CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.TERMNAME ELSE '' END AS TERMNAME,
-	CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.DATEDUE ELSE '' END AS DATEDUE,
-	CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.STATE ELSE '' END AS STATE,
-	ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) AS LINE_NO,
-	T.ITEMID,
-	T.QUANTITY,
-	T.UNIT,
-	T.PRICE, 
-	T.LOCATIONID,
-	T.DEPARTMENTID,
-	T.SODOCUMENTENTRY_CLASSID,
-	T.SODOCUMENTENTRY_PROJECTID,
-	T.PROJECTID,
-	T.SODOCUMENTENTRY_CUSTOMERID,
-	T.MEMO, 
-	T.CONVERSIONTYPE,
-	T.SODOCUMENTENTRY_RETAINAGEPERCENTAGE,
-	T.SODOCUMENTENTRY_AMOUNTRETAINED, 
-	COALESCE(T.DONOTIMPORT2, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT3, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT4, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT5, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT6, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT7, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT8, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT9, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT10, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT11, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT12, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT14, '') AS DONOTIMPORT,
-	COALESCE(T.DONOTIMPORT15, '') AS DONOTIMPORT
-FROM
-	(SELECT
-		DONOTIMPORT1,
-		DONOTIMPORT13,
-		TRANSACTIONTYPE,
-		COALESCE(FORMAT(COALESCE([DATE],GLPOSTINGDATE), 'yyyy-MM-dd'), '') AS [DATE],
-		COALESCE(FORMAT(GLPOSTINGDATE, 'yyyy-MM-dd'),'') AS GLPOSTINGDATE,
-		DOCUMENTNO,
-		COALESCE(CUSTOMER_ID, '') AS CUSTOMER_ID,
-		TERMNAME,
-		COALESCE(FORMAT(DATEDUE, 'yyyy-MM-dd'),'') AS DATEDUE,
-		STATE,
-		LINE,
-		ITEMID,
-		QUANTITY,
-		UNIT,
-		SUM(PRICE) AS PRICE, --THIS NEEDS TO BE AGGREGATED
-		LOCATIONID,
-		DEPARTMENTID,
-		SODOCUMENTENTRY_CLASSID,
-		SODOCUMENTENTRY_PROJECTID,
-		PROJECTID,
-		COALESCE(SODOCUMENTENTRY_CUSTOMERID, '') AS SODOCUMENTENTRY_CUSTOMERID,
-		MAX(MEMO) AS MEMO, --AGGREGATE THIS AS MAX
-		CONVERSIONTYPE,
-		SODOCUMENTENTRY_RETAINAGEPERCENTAGE,
-		SUM(SODOCUMENTENTRY_AMOUNTRETAINED) AS SODOCUMENTENTRY_AMOUNTRETAINED, --THIS NEEDS TO BE AGGREGATED
-		DONOTIMPORT2,
-		DONOTIMPORT3,
-		DONOTIMPORT4,
-		DONOTIMPORT5,
-		DONOTIMPORT6,
-		DONOTIMPORT7,
-		DONOTIMPORT8,
-		DONOTIMPORT9,
-		DONOTIMPORT10,
-		DONOTIMPORT11,
-		DONOTIMPORT12,
-		DONOTIMPORT14,
-		DONOTIMPORT15
-		--DONOTIMPORT16
-	FROM
-		(SELECT
-			ACT.Data_Folder_Id AS DONOTIMPORT1,
-			'Startup AR' AS TRANSACTIONTYPE,
-			CASE WHEN ACT.Transaction_Type IN ('Invoice','Invoice adjustment','Issued invoice') THEN CASE WHEN ACT.Amount_Type IN ('Retainage billed','Retainage released') THEN ACT.Related_Status_Date ELSE ARA.Status_Date END ELSE ACT.Accounting_Date END AS DATE,
-			ACT.Accounting_Date AS GLPOSTINGDATE,
-			CASE
-				WHEN ACT.Transaction_Type IN ('TT_IINV','TT_MINV','Issued invoice','Invoice') THEN
-					CASE
-						WHEN @IncludeRetainage = 1
-							AND ACT.Amount_Type IN ('AT_RETR','AT_TRR','Retainage released','Tax retainage relsed')
-						THEN CONCAT('RetBill: ', P.PrimaryIdValue)
-						ELSE P.PrimaryIdValue
-					END
-
-				WHEN ACT.Transaction_Type IN ('TT_IADJ','TT_PADJ','Invoice adjustment','Cash rcpt adjustmnt') THEN
-					COALESCE(CASE WHEN ACT.Edit_Type = 'Edit' THEN P.PrimaryIdValue ELSE ACT.Adjustment END, '')
-				ELSE COALESCE(ACT.Cash_Receipt,'') END AS DOCUMENTNO,
-			TC.NEW_CUSTOMER_ID AS CUSTOMER_ID,
-			'' AS TERMNAME, --DONT NEED THIS IF WE PROVIDE DATEDUE
-			ACT.Due_Date AS DATEDUE,
-			'Pending' AS STATE,
-			'1' AS LINE,
-			'Revenue' AS ITEMID,
-			'1' AS QUANTITY,
-			'Each' AS UNIT,
-			--(CASE
-			--	 WHEN ACT.Amount_Type NOT IN ('RETR','TRR')
-			--		 THEN ROUND(ACT.Amount + ACT.Retainage, 2)
-			--	 ELSE 0 END) +
-			--	(CASE
-			--		 WHEN @IncludeRetainage = 1
-			--			  AND ACT.Amount_Type NOT IN ('RETG','TRET','ROB','TROB')
-			--			 THEN ROUND(-ACT.Retainage, 2)
-			--		 ELSE 0
-			--	 END) AS PRICE, --THIS NEEDS TO BE AGGREGATED
-
-			(
-				CASE
-					WHEN ACT.Amount_Type NOT IN ('Retainage released', 'Tax retainage released')
-						THEN ROUND(ISNULL(ACT.Amount, 0) + ISNULL(ACT.Retainage, 0), 2)
-					ELSE 0
-				END
-			)
-			+
-			(
-				CASE
-					WHEN @IncludeRetainage = 1
-						 AND ACT.Amount_Type NOT IN ('Retainage billed', 'Tax retainage billed')
-						THEN ROUND(-ISNULL(ACT.Retainage, 0), 2)
-					ELSE 0
-				END
-			) AS PRICE,
-			TE.NEW_ENTITY_ID AS LOCATIONID,
-			'' AS DEPARTMENTID,
-			'' AS SODOCUMENTENTRY_CLASSID,
-			COALESCE(CASE WHEN TJ.INCLUDE_JOB = 1 THEN TJ.NEW_JOB_ID ELSE '' END, '') AS SODOCUMENTENTRY_PROJECTID,
-			COALESCE(CASE WHEN TJ.INCLUDE_JOB = 1 THEN TJ.NEW_JOB_ID ELSE '' END, '') AS PROJECTID,
-			TC.NEW_CUSTOMER_ID AS SODOCUMENTENTRY_CUSTOMERID,
-			CASE WHEN ACT.Transaction_Type IN ('Invoice', 'Invoice adjustment', 'Issued invoice') THEN ACT.Description ELSE '' END AS MEMO, --AGGREGATE THIS AS MAX
-			'Price' AS CONVERSIONTYPE,
-			'' AS SODOCUMENTENTRY_RETAINAGEPERCENTAGE,
-			CASE WHEN 1 = 1 AND ACT.Amount_Type NOT IN ('RETG','TRET','ROB','TROB') THEN ROUND(-ACT.Retainage, 2) ELSE 0 END  AS SODOCUMENTENTRY_AMOUNTRETAINED, --THIS NEEDS TO BE AGGREGATED
-			'LG_JOB_ID | ' + ACT.Job AS DONOTIMPORT2,
-			'LG_JOB_DESC | ' + J.Description AS DONOTIMPORT3,
-			'LG_TRANS_TYPE | ' + CASE WHEN ACT.Transaction_Type IN('Issued invoice', 'Invoice') THEN (CASE WHEN ACT.Amount_Type = 'Tax retainage relsed' THEN 'Tax Ret. Rel.' ELSE ((CASE WHEN ACT.Amount_Type = 'Retainage released' THEN 'Ret. Released' ELSE ('Invoice') END)) END) ELSE (CASE WHEN ACT.Transaction_Type = 'Invoice adjustment' THEN (CASE WHEN ACT.EDIT_Type = 'Edit' THEN 'Invoice' ELSE ACT.Adjustment_Type END) ELSE (CASE WHEN ACT.Transaction_Type = 'Cash recpt adjustmnt' THEN (CASE WHEN ACT.Status_Type = 'Customer cash recpt' THEN 'Cust Cash Recpt' ELSE ACT.Adjustment_Type END)ELSE ACT.Transaction_Type END) END) END AS DONOTIMPORT4,
-			'LG_STS_TYP | ' + ACT.Status_Type AS DONOTIMPORT5,
-			'LG_TRN_TYP | ' + ACT.Transaction_Type AS DONOTIMPORT6,
-			'LG_AMT_TYP | ' + ACT.Amount_Type AS DONOTIMPORT7,
-			'LG_EDT_TYP | ' + ACT.EDIT_Type AS DONOTIMPORT8,
-			'LG_ACT_TYP | ' + ARA.Activity_Type AS DONOTIMPORT9,
-			'LG_EXTRA | ' + ACT.Extra AS DONOTIMPORT10,
-			'LG_CRD_ACCT | ' + ACT.Credit_Account__Accrual AS DONOTIMPORT11,
-			'LG_TRAN_TYPE | ' + CASE WHEN ACT.Transaction_Type IN ('Issued invoice','Invoice') THEN CASE ACT.Amount_Type
-							 WHEN 'Tax retainage relsed' THEN 'Tax Ret. Rel.'
-							 WHEN 'Retainage released'   THEN 'Ret. Released'
-							 ELSE 'Invoice'
-							 END
-							 WHEN ACT.Transaction_Type = 'Invoice adjustment'
-							 THEN CASE WHEN ACT.Edit_Type = 'Edit' THEN 'Invoice' ELSE COALESCE(ACT.Adjustment_Type,'') END
-							 WHEN ACT.Transaction_Type = 'Cash recpt adjustmnt'
-							 THEN CASE WHEN ACT.Status_Type = 'Customer cash recpt' THEN 'Cust Cash Recpt' ELSE COALESCE(ACT.Adjustment_Type,'') END
-							 ELSE ACT.Transaction_Type
-							 END AS DONOTIMPORT12,
-			'LG_CUST | ' + ACT.Customer AS DONOTIMPORT13,
-			'LG_CUST_NME | ' + C.Name AS DONOTIMPORT14,
-			'LG_CONT | ' + ACT.Contract AS DONOTIMPORT15,
-			'LG_CONT_ITM | ' + ACT.Contract_Item AS DONOTIMPORT16,
-			ACT.Invoice AS DONOTIMPORT17
-		FROM
-			[s300].[ART_CURRENT__TRANSACTION] ACT
-			CROSS APPLY (SELECT PrimaryIdValue = COALESCE(CASE WHEN @PrimaryID = 'Invoice' THEN ACT.Invoice ELSE ACT.Draw END, '')) P
-			LEFT JOIN [s300].[ARM_MASTER__CUSTOMER] C ON ACT.Customer = C.Customer AND ACT.Data_Folder_Id = C.Data_Folder_Id
-			LEFT JOIN [s300].[ARA_ACTIVITY__ACTIVITY] ARA ON
-				ACT.Customer = ARA.Customer and
-				ACT.Status_Type = ARA.Status_Type and
-				ACT.Status_Date = ARA.Status_Date and
-				ACT.Status_Seq = ARA.Status_Seq and
-				ACT.Actvty_Seq = ARA.Actvty_Seq and
-				ACT.Data_Folder_Id = ARA.Data_Folder_Id
-			LEFT JOIN [s300].[JCM_MASTER__JOB] J ON ACT.Job = J.Job and ACT.Data_Folder_Id = J.Data_Folder_Id
-			LEFT JOIN [MAP].[T_TRANS_JOB] TJ ON ACT.Data_Folder_Id = TJ.DATA_FOLDER_ID AND ACT.Job = TJ.LEGACY_JOB_ID
-			LEFT JOIN [MAP].[T_TRANS_ENTITY] TE ON ACT.Data_Folder_Id = TE.DATA_FOLDER_ID
-			LEFT JOIN [MAP].[T_TRANS_CUSTOMER] TC ON ACT.Customer = TC.LEGACY_CUSTOMER_ID AND ACT.Data_Folder_Id = TC.DATA_FOLDER_ID
-		WHERE
-			--1ST FILTER
-			(CASE
-				WHEN @AgingBasis = 'Invoice date' THEN
-					CASE
-						WHEN ACT.Transaction_Type IN ('Issued invoice','Invoice') THEN
-							CASE
-								WHEN ACT.Amount_Type IN ('Retainage released','Tax retainage relsed') THEN ACT.Related_Status_Date
-								ELSE ARA.Status_Date
-							END
-						WHEN ACT.Transaction_Type IN ('Cash receipt','Cash recpt adjustmnt') THEN ACT.Deposit_Date
-						WHEN ACT.Transaction_Type = 'Invoice adjustment' THEN
-							CASE
-								WHEN ACT.Adjustment_Type = 'Not used' AND ACT.Amount_Type NOT IN ('Retainage released','Tax retainage relsed') THEN ARA.Status_Date
-								WHEN ACT.Adjustment_Type = 'Not used' AND ACT.Amount_Type     IN ('Retainage released','Tax retainage relsed') THEN ACT.Related_Status_Date
-								ELSE ACT.Reference_Date
-							END
-						ELSE ACT.Reference_Date
-					END
-
-				WHEN @AgingBasis = 'Accounting date' THEN
-					ISNULL(ACT.Accounting_Date, CONVERT(date,'19000101'))  -- Crystal Date(0)
-
-				WHEN @AgingBasis = 'Due date' THEN
-					CASE
-						WHEN ARA.Due_Date <> CONVERT(date,'19000101') THEN ARA.Due_Date  -- Crystal Date(0)
-						ELSE ACT.Due_Date
-					END
-
-				ELSE CONVERT(date,'19000101')  -- fallback if @AgingBasis is unexpected
-			END <= @AgingDate)
-
-			AND
-
-			--2ND FILTER
-			(CASE
-				WHEN @IncludeFinanceCharges = 0 AND ACT.Amount_Type = 'FC' THEN 0
-				ELSE 1
-			 END = 1)
-
-			 AND
-
-			--3RD Filter
-			ACT.Amount_Type NOT IN('NSF Bank charge', 'Stored materals')) A1
-	GROUP BY
-		DONOTIMPORT1,
-		TRANSACTIONTYPE,
-		[DATE],
-		GLPOSTINGDATE,
-		DOCUMENTNO,
-		CUSTOMER_ID,
-		TERMNAME,
-		DATEDUE,
-		STATE,
-		LINE,
-		ITEMID,
-		QUANTITY,
-		UNIT,
-		LOCATIONID,
-		DEPARTMENTID,
-		SODOCUMENTENTRY_CLASSID,
-		SODOCUMENTENTRY_PROJECTID,
-		PROJECTID,
-		SODOCUMENTENTRY_CUSTOMERID,
-		CONVERSIONTYPE,
-		SODOCUMENTENTRY_RETAINAGEPERCENTAGE,
-		DONOTIMPORT2,
-		DONOTIMPORT3,
-		DONOTIMPORT4,
-		DONOTIMPORT5,
-		DONOTIMPORT6,
-		DONOTIMPORT7,
-		DONOTIMPORT8,
-		DONOTIMPORT9,
-		DONOTIMPORT10,
-		DONOTIMPORT11,
-		DONOTIMPORT12,
-		DONOTIMPORT13,
-		DONOTIMPORT14,
-		DONOTIMPORT15
-		--DONOTIMPORT16
-		) T
-ORDER BY
-	T.DONOTIMPORT1,
-	T.CUSTOMER_ID,
-	T.DOCUMENTNO,
-	T.GLPOSTINGDATE;
+    T.DONOTIMPORT1                                                                                                                                                              AS DONOTIMPORT,
+    T.DONOTIMPORT2                                                                                                                                                              AS DONOTIMPORT,
+    CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.TRANSACTIONTYPE ELSE '' END AS TRANSACTIONTYPE,
+    CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.[DATE]           ELSE '' END AS [DATE],
+    CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.GLPOSTINGDATE    ELSE '' END AS GLPOSTINGDATE,
+    CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.DOCUMENTNO       ELSE '' END AS DOCUMENTNO,
+    CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.CUSTOMER_ID      ELSE '' END AS CUSTOMER_ID,
+    CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.TERMNAME         ELSE '' END AS TERMNAME,
+    CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.DATEDUE          ELSE '' END AS DATEDUE,
+    CASE WHEN ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE) = 1 THEN T.STATE            ELSE '' END AS STATE,
+         ROW_NUMBER() OVER (PARTITION BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE)                                              AS LINE_NO,
+    T.ITEMID,
+    T.QUANTITY,
+    T.UNIT,
+    T.PRICE,
+    T.LOCATIONID,
+    T.DEPARTMENTID,
+    T.SODOCUMENTENTRY_CLASSID,
+    T.SODOCUMENTENTRY_PROJECTID,
+    T.PROJECTID,
+    T.SODOCUMENTENTRY_CUSTOMERID,
+    T.MEMO,
+    T.CONVERSIONTYPE,
+    T.SODOCUMENTENTRY_RETAINAGEPERCENTAGE,
+    T.SODOCUMENTENTRY_AMOUNTRETAINED,
+    T.DONOTIMPORT3                                                                                                                                                              AS DONOTIMPORT,
+    T.DONOTIMPORT4                                                                                                                                                              AS DONOTIMPORT,
+    T.DONOTIMPORT5                                                                                                                                                              AS DONOTIMPORT,
+    T.DONOTIMPORT6                                                                                                                                                              AS DONOTIMPORT,
+    T.DONOTIMPORT7                                                                                                                                                              AS DONOTIMPORT
+FROM (
+    SELECT
+        ART.Data_Folder_Id                                                              AS DONOTIMPORT1,
+        'LG_CUST | ' + ART.Customer                                                     AS DONOTIMPORT2,
+        'Startup AR'                                                                    AS TRANSACTIONTYPE,
+        FORMAT(ARS.Status_Date, 'yyyy-MM-dd')                                           AS [DATE],
+        FORMAT(NULLIF(ART.Accounting_Date, CONVERT(DATE,'1900-01-01')), 'yyyy-MM-dd')   AS GLPOSTINGDATE,
+        ARS.Invoice                                                                     AS DOCUMENTNO,
+        COALESCE(TC.NEW_CUSTOMER_ID, '')                                                AS CUSTOMER_ID,
+        ''                                                                              AS TERMNAME,
+        FORMAT(NULLIF(ART.Due_Date, CONVERT(DATE,'1900-01-01')), 'yyyy-MM-dd')          AS DATEDUE,
+        'Pending'                                                                       AS STATE,
+        'Revenue'                                                                       AS ITEMID,
+        1                                                                               AS QUANTITY,
+        'Each'                                                                          AS UNIT,
+        -- PRICE = net outstanding amount (= col N of canned report)
+        ROUND(ART.Net_Amount, 2)                                                        AS PRICE,
+        COALESCE(TE.NEW_ENTITY_ID, '')                                                  AS LOCATIONID,
+        ''                                                                              AS DEPARTMENTID,
+        ''                                                                              AS SODOCUMENTENTRY_CLASSID,
+        COALESCE(CASE WHEN TJ.INCLUDE_JOB = 1 THEN TJ.NEW_JOB_ID ELSE '' END, '')      AS SODOCUMENTENTRY_PROJECTID,
+        COALESCE(CASE WHEN TJ.INCLUDE_JOB = 1 THEN TJ.NEW_JOB_ID ELSE '' END, '')      AS PROJECTID,
+        COALESCE(TC.NEW_CUSTOMER_ID, '')                                                AS SODOCUMENTENTRY_CUSTOMERID,
+        COALESCE(C.Name, '')                                                            AS MEMO,
+        'Price'                                                                         AS CONVERSIONTYPE,
+        ''                                                                              AS SODOCUMENTENTRY_RETAINAGEPERCENTAGE,
+        -- AMOUNTRETAINED = net retainage outstanding (positive = held back; = -col AA of canned report)
+        ROUND(-ISNULL(ARA.Retainage_Net, 0), 2)                                        AS SODOCUMENTENTRY_AMOUNTRETAINED,
+        -- Retainage breakdown reference columns
+        'LG_RET_NET | '  + CAST(ROUND(ISNULL(ARA.Retainage_Net, 0), 2)          AS VARCHAR(30))  AS DONOTIMPORT3,
+        'LG_RET_HELD | ' + CAST(ROUND(ISNULL(ARA.Retainage_Held_Gross, 0), 2)   AS VARCHAR(30))  AS DONOTIMPORT4,
+        'LG_RET_REL | '  + CAST(ROUND(ISNULL(ARA.Retainage_Released, 0), 2)     AS VARCHAR(30))  AS DONOTIMPORT5,
+        'LG_RET_BIL | '  + CAST(ROUND(ISNULL(ARA.Retainage_Billed, 0), 2)       AS VARCHAR(30))  AS DONOTIMPORT6,
+        'LG_CUST_NME | ' + COALESCE(C.Name, '')                                                   AS DONOTIMPORT7
+    FROM ART_BY_STATUS ART
+    INNER JOIN [s300].[ARA_ACTIVITY__STATUS] ARS
+        ON  ART.Customer       = ARS.Customer
+        AND ART.Status_Type    = ARS.Status_Type
+        AND ART.Status_Date    = ARS.Status_Date
+        AND ART.Status_Seq     = ARS.Status_Seq
+        AND ART.Data_Folder_Id = ARS.Data_Folder_Id
+    LEFT JOIN ARA_BY_STATUS ARA
+        ON  ART.Customer       = ARA.Customer
+        AND ART.Status_Type    = ARA.Status_Type
+        AND ART.Status_Date    = ARA.Status_Date
+        AND ART.Status_Seq     = ARA.Status_Seq
+        AND ART.Data_Folder_Id = ARA.Data_Folder_Id
+    LEFT JOIN [s300].[ARM_MASTER__CUSTOMER] C
+        ON  ART.Customer       = C.Customer
+        AND ART.Data_Folder_Id = C.Data_Folder_Id
+    LEFT JOIN [MAP].[T_TRANS_CUSTOMER] TC
+        ON  ART.Customer       = TC.LEGACY_CUSTOMER_ID
+        AND ART.Data_Folder_Id = TC.DATA_FOLDER_ID
+    LEFT JOIN [MAP].[T_TRANS_ENTITY] TE
+        ON  ART.Data_Folder_Id = TE.DATA_FOLDER_ID
+    LEFT JOIN [MAP].[T_TRANS_JOB] TJ
+        ON  ART.Data_Folder_Id = TJ.DATA_FOLDER_ID
+        AND ART.Job            = TJ.LEGACY_JOB_ID
+        AND ISNULL(TJ.LEGACY_EXTRA_ID, '') = ''
+    WHERE ART.Net_Amount <> 0 OR ISNULL(ARA.Retainage_Net, 0) <> 0
+) T
+ORDER BY T.DONOTIMPORT1, T.CUSTOMER_ID, T.DOCUMENTNO, T.GLPOSTINGDATE;
