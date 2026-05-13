@@ -17,10 +17,10 @@ DECLARE @BatchSize   INT  = 5000;  -- ← Adjust batch size here
     -- =========================================================================
     SELECT
         ''                                                                                          AS DONOTIMPORT_1,
-        CASE WHEN LINE_NO_REV = '1' THEN JOURNAL             ELSE '' END                           AS JOURNAL,
-        CASE WHEN LINE_NO_REV = '1' THEN FORMAT([DATE], 'yyyy-MM-dd') ELSE '' END                  AS DATE_COL,
-        CASE WHEN LINE_NO_REV = '1' THEN 'Cost Entry | ' + DESCRIPTION         ELSE '' END                           AS DESCRIPTION_OUT,
-        CASE WHEN LINE_NO_REV = '1' THEN REFERENCE_NO        ELSE '' END                           AS REFERENCE_NO,
+        JOURNAL AS JOURNAL,
+        FORMAT([DATE], 'yyyy-MM-dd') AS DATE_COL,
+        'Cost Entry | ' + DESCRIPTION AS DESCRIPTION_OUT,
+        REFERENCE_NO AS REFERENCE_NO,
         LINE_NO_REV                                                                                 AS LINE_NO,
         ACCT_NO,
         COALESCE(LOCATION_ID, '')                                                                   AS LOCATION_ID,
