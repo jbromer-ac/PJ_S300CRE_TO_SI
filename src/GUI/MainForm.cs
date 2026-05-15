@@ -163,7 +163,7 @@ public class MainForm : Form
         browseFile.Click += (_, _) =>
         {
             using var dlg = new OpenFileDialog { Filter = "Excel Files (*.xlsx)|*.xlsx|All Files (*.*)|*.*", Title = "Select Mapping File" };
-            if (dlg.ShowDialog() == DialogResult.OK) _mappingFilePath.Text = dlg.FileName;
+            if (dlg.ShowDialog(this) == DialogResult.OK) _mappingFilePath.Text = dlg.FileName;
         };
         _applyMappingsBtn = MakeBtn("Apply Mappings", Color.FromArgb(16, 124, 16));
         _applyMappingsBtn.Margin = new Padding(0, 2, 0, 6);
@@ -189,8 +189,8 @@ public class MainForm : Form
         var browseFolder = new Button { Text = "Browse...", AutoSize = true, Margin = new Padding(0, 3, 8, 3) };
         browseFolder.Click += (_, _) =>
         {
-            using var dlg = new FolderBrowserDialog { UseDescriptionForTitle = true, Description = "Select Output Folder" };
-            if (dlg.ShowDialog() == DialogResult.OK) _outputFolderPath.Text = dlg.SelectedPath;
+            using var dlg = new FolderBrowserDialog { Description = "Select Output Folder" };
+            if (dlg.ShowDialog(this) == DialogResult.OK) _outputFolderPath.Text = dlg.SelectedPath;
         };
         _exportMappingsBtn = MakeBtn("Export Mappings", Color.FromArgb(16, 124, 16));
         _exportMappingsBtn.Click += async (_, _) => await RunAsync(RunExportMappings);
@@ -264,10 +264,10 @@ public class MainForm : Form
             using var cmd = new SqlCommand(
                 "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' ORDER BY name", conn);
             using var rdr = cmd.ExecuteReader();
+            _dbCombo.Items.Add("(Please select a Database)");
             while (rdr.Read())
                 _dbCombo.Items.Add(rdr.GetString(0));
-            if (_dbCombo.Items.Count > 0)
-                _dbCombo.SelectedIndex = 0;
+            _dbCombo.SelectedIndex = 0;
             Log("Databases loaded.", Color.FromArgb(106, 153, 85));
         }
         catch (Exception ex)
@@ -284,9 +284,16 @@ public class MainForm : Form
     // Operation Runner
     // -------------------------------------------------------------------------
 
-    private string? SelectedDb => InvokeRequired
-        ? (string?)Invoke(() => _dbCombo.SelectedItem)
-        : _dbCombo.SelectedItem as string;
+    private string? SelectedDb
+    {
+        get
+        {
+            var val = InvokeRequired
+                ? (string?)Invoke(() => _dbCombo.SelectedItem)
+                : _dbCombo.SelectedItem as string;
+            return val == "(Please select a Database)" ? null : val;
+        }
+    }
 
     private string GetMappingFile() => InvokeRequired
         ? (string)Invoke(() => _mappingFilePath.Text.Trim())!

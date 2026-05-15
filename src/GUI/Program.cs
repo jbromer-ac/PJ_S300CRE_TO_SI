@@ -1,5 +1,12 @@
-using S300CRE_to_SI.GUI;
+namespace S300CRE_to_SI.GUI;
 
-Application.EnableVisualStyles();
-Application.SetCompatibleTextRenderingDefault(false);
-Application.Run(new MainForm());
+static class Program
+{
+    [STAThread]
+    static void Main()
+    {
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Application.Run(new MainForm());
+    }
+}
