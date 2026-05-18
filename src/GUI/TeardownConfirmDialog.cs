@@ -5,7 +5,7 @@ internal class TeardownConfirmDialog : Form
     public TeardownConfirmDialog(string databaseName)
     {
         Text = "Confirm Teardown";
-        Size = new Size(440, 200);
+        Size = new Size(480, 240);
         MinimumSize = Size;
         MaximumSize = Size;
         StartPosition = FormStartPosition.CenterParent;
@@ -28,8 +28,10 @@ internal class TeardownConfirmDialog : Form
 
         layout.Controls.Add(new Label
         {
-            Text = $"This will drop all MAP schema objects from [{databaseName}].\n" +
-                   "Type the database name below to confirm:",
+            Text = $"WARNING: This will permanently remove all mapping tables created by\n" +
+                   $"\"Create Default Mappings\" from [{databaseName}]. The MAP schema will\n" +
+                   $"also be dropped, unless other objects exist on it.\n\n" +
+                   $"Type the database name below to confirm:",
             AutoSize = true,
             Padding = new Padding(0, 0, 0, 8),
         });
