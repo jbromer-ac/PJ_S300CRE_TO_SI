@@ -232,15 +232,13 @@ public class MappingExporter
             Name: "GL Account",
             HeaderRow: 3,
             LegacyColCount: 3,
-            Headers: ["Data Folder ID", "GL Account", "GL Account Description", "GL Account"],
+            Headers: ["Data Folder ID", "GL Account", "GL Account Description", "GL Account", "Map Type"],
             Sql: """
                 SELECT TBA.Data_Folder_Id,
                        TBA.Legacy_Base_Account,
-                       (SELECT TOP 1 MA.Account_Title
-                        FROM [MAP].[T_MASTER_ACCOUNT] MA
-                        WHERE MA.BaseAccount = TBA.Legacy_Base_Account
-                          AND MA.Data_Folder_Id = TBA.Data_Folder_Id) AS Description,
-                       TBA.New_Base_Account
+                       TBA.Note AS Description,
+                       TBA.New_Base_Account,
+                       TBA.ACCT_MATCH_TYPE
                 FROM [MAP].[T_TRANS_BASEACCT] TBA
                 ORDER BY TBA.Data_Folder_Id, TBA.Legacy_Base_Account
                 """

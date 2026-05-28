@@ -264,25 +264,28 @@ public class MappingApplier
     private void ProcessGLAccount(IXLWorksheet ws)
     {
         // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy GL Account | C: Description | D: New GL Account
+        // A: DATA_FOLDER_ID | B: Legacy GL Account | C: Description | D: New GL Account | E: ACCT_MATCH_TYPE (Map Type)
         ProcessRows(ws, dataStartRow: 4, row =>
         {
             if (IsHidden(ws, row)) return (skip: true, execute: null);
 
-            var dataFolderId = Str(ws, row, 1);
+            var dataFolderId  = Str(ws, row, 1);
             if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
 
-            var legacyAcct = Str(ws, row, 2);
-            var newAcct    = Str(ws, row, 4);
+            var legacyAcct    = Str(ws, row, 2);
+            var newAcct       = Str(ws, row, 4);
+            var acctMatchType = Str(ws, row, 5);
 
             return (skip: false, execute: () =>
                 Exec(@"UPDATE [MAP].[T_TRANS_BASEACCT]
-                       SET New_Base_Account    = @newAcct
+                       SET New_Base_Account    = @newAcct,
+                           ACCT_MATCH_TYPE     = @acctMatchType
                        WHERE Legacy_Base_Account = @legacyAcct
                          AND Data_Folder_Id    = @dataFolderId",
-                    new SqlParameter("@newAcct",      newAcct),
-                    new SqlParameter("@legacyAcct",   legacyAcct),
-                    new SqlParameter("@dataFolderId", dataFolderId)));
+                    new SqlParameter("@newAcct",        newAcct),
+                    new SqlParameter("@acctMatchType",  acctMatchType),
+                    new SqlParameter("@legacyAcct",     legacyAcct),
+                    new SqlParameter("@dataFolderId",   dataFolderId)));
         });
     }
 
