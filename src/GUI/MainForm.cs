@@ -191,21 +191,21 @@ public class MainForm : Form
 
         // Row 1: Import Mappings | Export Mappings | Generate Imports
         var row1 = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent };
-        _applyMappingsBtn = MakeBtn("Import Mappings", Color.FromArgb(16, 110, 16));
-        _applyMappingsBtn.Click += async (_, _) =>
-        {
-            using var dlg = new OpenFileDialog { Filter = "Excel Files (*.xlsx)|*.xlsx|All Files (*.*)|*.*", Title = "Select Mapping File" };
-            if (dlg.ShowDialog(this) != DialogResult.OK) return;
-            var path = dlg.FileName;
-            await RunAsync(() => RunApplyMappings(path));
-        };
-        _exportMappingsBtn = MakeBtn("Export Mappings", Color.FromArgb(16, 110, 16));
+        _exportMappingsBtn = MakeBtn("Export Current Mappings", Color.FromArgb(16, 110, 16));
         _exportMappingsBtn.Click += async (_, _) =>
         {
             using var dlg = new FolderBrowserDialog { Description = "Select output folder for Export Mappings" };
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             var folder = dlg.SelectedPath;
             await RunAsync(() => RunExportMappings(folder));
+        };
+        _applyMappingsBtn = MakeBtn("Re-Import Mappings", Color.FromArgb(16, 110, 16));
+        _applyMappingsBtn.Click += async (_, _) =>
+        {
+            using var dlg = new OpenFileDialog { Filter = "Excel Files (*.xlsx)|*.xlsx|All Files (*.*)|*.*", Title = "Select Mapping File" };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            var path = dlg.FileName;
+            await RunAsync(() => RunApplyMappings(path));
         };
         _generateImportsBtn = MakeBtn("Generate Imports", Color.FromArgb(16, 110, 16));
         _generateImportsBtn.Click += async (_, _) =>
@@ -215,7 +215,7 @@ public class MainForm : Form
             var folder = dlg.SelectedPath;
             await RunAsync(() => RunGenerateImports(folder));
         };
-        row1.Controls.AddRange(new Control[] { _applyMappingsBtn, _exportMappingsBtn, _generateImportsBtn });
+        row1.Controls.AddRange(new Control[] { _exportMappingsBtn, _applyMappingsBtn, _generateImportsBtn });
         layout.Controls.Add(row1);
 
         panel.Controls.Add(layout);

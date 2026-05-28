@@ -1,4 +1,4 @@
----JTD COST AS OF 04/09/26
+---JTD COST IMPORT AS OF 05/18/26 THIS WAS RETURNING REVERSED TRANSACTIONS ON PROJECT-COST CODE COMBINATIONS THAT HAD SINCE BEEN REMOVED FROM PROJECTS
 DECLARE @Cutoff_Date DATE;
 SET @Cutoff_Date = (
     SELECT CONVERT(DATE, F.FIELD_VALUE, 23)  -- 23 = yyyy-mm-dd
@@ -66,7 +66,8 @@ DECLARE @BatchSize   INT  = 5000;  -- ← Adjust batch size here
                 ISNULL(JT.NEW_JOB_ID, '') + ' | Acct Date: ' + ISNULL(CONVERT(VARCHAR(10), JCT.Accounting_Date, 120), '') + ' | Application of Origin: ' +
                     ISNULL(JCT.Application_of_Origin, '') + ' | Batch: ' + ISNULL(JCT.Batch, '') AS DESCRIPTION,
                 '' AS REFERENCE_NO,
-                COALESCE(COALESCE(FFULL.NEW_BASE_ACCOUNT, FNF.NEW_BASE_ACCOUNT),'(MISSING)') AS ACCT_NO,
+                --COALESCE(COALESCE(FFULL.NEW_BASE_ACCOUNT, FNF.NEW_BASE_ACCOUNT),'(MISSING)') AS ACCT_NO,
+				TCT.NEW_INTACCT_GL_ACCOUNT AS ACCT_NO,
                 COALESCE(JT.NEW_ENTITY_ID, '') AS LOCATION_ID,
                 COALESCE(JT.NEW_DEPARTMENT_ID, '') AS DEPT_ID,
                 COALESCE(JT.NEW_CLASS_ID, '') AS CLASS_ID,
@@ -118,8 +119,10 @@ DECLARE @BatchSize   INT  = 5000;  -- ← Adjust batch size here
                 LEFT JOIN [MAP].[T_TRANS_COST_CODE] TCC ON JCT.Cost_Code = TCC.LEGACY_COST_CODE_ID AND JCT.Data_Folder_Id = TCC.DATA_FOLDER_ID
                 LEFT JOIN [MAP].[T_TRANS_COST_TYPE] TCT ON JCT.Category = TCT.LEGACY_COST_TYPE_ID AND JCT.Data_Folder_Id = TCT.DATA_FOLDER_ID
                 LEFT JOIN [MAP].[T_TRANS_VENDOR] TV ON JCT.Vendor = TV.LEGACY_VENDOR_ID AND JCT.Data_Folder_Id = TV.DATA_FOLDER_ID
+				LEFT JOIN [s300].[JCM_MASTER__COST_CODE] CC ON JCT.Cost_Code = CC.Cost_Code AND JCT.JOB = CC.Job AND JCT.Extra = CC.Extra AND JCT.Data_Folder_Id = CC.DATA_FOLDER_ID --JUST ADDED THIS
             WHERE
                 JT.INCLUDE_JOB = 1
+				AND CC.Cost_Code IS NOT NULL --JUST ADDED THIS
                 AND JCT.Commitment = ''
                 AND JCT.Accounting_Date <= @Cutoff_Date
                 AND JCT.Transaction_Type IN ('AP cost', 'EQ cost', 'JC cost', 'PR cost', 'IV cost', 'SM cost')
@@ -129,7 +132,8 @@ DECLARE @BatchSize   INT  = 5000;  -- ← Adjust batch size here
                 JCT.Data_Folder_Id,
                 JCT.Accounting_Date,
                 ISNULL(JT.NEW_JOB_ID, '') + ' | Acct Date: ' + ISNULL(CONVERT(VARCHAR(10), JCT.Accounting_Date, 120), '') + ' | Application of Origin: ' + ISNULL(JCT.Application_of_Origin, '') + ' | Batch: ' + ISNULL(JCT.Batch, ''),
-                COALESCE(COALESCE(FFULL.NEW_BASE_ACCOUNT, FNF.NEW_BASE_ACCOUNT), '(MISSING)'),
+                --COALESCE(COALESCE(FFULL.NEW_BASE_ACCOUNT, FNF.NEW_BASE_ACCOUNT), '(MISSING)'),
+				TCT.NEW_INTACCT_GL_ACCOUNT,
                 COALESCE(JT.NEW_ENTITY_ID, ''),
                 COALESCE(JT.NEW_DEPARTMENT_ID, ''),
                 COALESCE(JT.NEW_CLASS_ID, ''),
@@ -162,7 +166,8 @@ DECLARE @BatchSize   INT  = 5000;  -- ← Adjust batch size here
                 ISNULL(JT.NEW_JOB_ID, '') + ' | Acct Date: ' + ISNULL(CONVERT(VARCHAR(10), JCT.Accounting_Date, 120), '') + ' | Application of Origin: ' +
                     ISNULL(JCT.Application_of_Origin, '') + ' | Batch: ' + ISNULL(JCT.Batch, '') AS DESCRIPTION,
                 '' AS REFERENCE_NO,
-                COALESCE(COALESCE(FFULL.NEW_BASE_ACCOUNT, FNF.NEW_BASE_ACCOUNT),'(MISSING)') AS ACCT_NO,
+                --COALESCE(COALESCE(FFULL.NEW_BASE_ACCOUNT, FNF.NEW_BASE_ACCOUNT),'(MISSING)') AS ACCT_NO,
+				TCT.NEW_INTACCT_GL_ACCOUNT,
                 COALESCE(JT.NEW_ENTITY_ID, '') AS LOCATION_ID,
                 COALESCE(JT.NEW_DEPARTMENT_ID, '') AS DEPT_ID,
                 COALESCE(JT.NEW_CLASS_ID, '') AS CLASS_ID,
@@ -228,8 +233,10 @@ DECLARE @BatchSize   INT  = 5000;  -- ← Adjust batch size here
                 LEFT JOIN [MAP].[T_TRANS_COST_CODE] TCC ON JCT.Cost_Code = TCC.LEGACY_COST_CODE_ID AND JCT.Data_Folder_Id = TCC.DATA_FOLDER_ID
                 LEFT JOIN [MAP].[T_TRANS_COST_TYPE] TCT ON JCT.Category = TCT.LEGACY_COST_TYPE_ID AND JCT.Data_Folder_Id = TCT.DATA_FOLDER_ID
                 LEFT JOIN [MAP].[T_TRANS_VENDOR] TV ON JCT.Vendor = TV.LEGACY_VENDOR_ID AND JCT.Data_Folder_Id = TV.DATA_FOLDER_ID
+				LEFT JOIN [s300].[JCM_MASTER__COST_CODE] CC ON JCT.Cost_Code = CC.Cost_Code AND JCT.JOB = CC.Job AND JCT.Extra = CC.Extra AND JCT.Data_Folder_Id = CC.DATA_FOLDER_ID --JUST ADDED THIS
             WHERE
                 JT.INCLUDE_JOB = 1
+				AND CC.Cost_Code IS NOT NULL --JUST ADDED THIS
                 AND JCT.Commitment = ''
                 AND JCT.Accounting_Date <= @Cutoff_Date
                 AND JCT.Transaction_Type IN ('AP cost', 'EQ cost', 'JC cost', 'PR cost', 'IV cost', 'SM cost')
@@ -239,7 +246,8 @@ DECLARE @BatchSize   INT  = 5000;  -- ← Adjust batch size here
                 JCT.Data_Folder_Id,
                 JCT.Accounting_Date,
                 ISNULL(JT.NEW_JOB_ID, '') + ' | Acct Date: ' + ISNULL(CONVERT(VARCHAR(10), JCT.Accounting_Date, 120), '') + ' | Application of Origin: ' + ISNULL(JCT.Application_of_Origin, '') + ' | Batch: ' + ISNULL(JCT.Batch, ''),
-                COALESCE(COALESCE(FFULL.NEW_BASE_ACCOUNT, FNF.NEW_BASE_ACCOUNT), '(MISSING)'),
+                --COALESCE(COALESCE(FFULL.NEW_BASE_ACCOUNT, FNF.NEW_BASE_ACCOUNT), '(MISSING)'),
+				TCT.NEW_INTACCT_GL_ACCOUNT,
                 COALESCE(JT.NEW_ENTITY_ID, ''),
                 COALESCE(JT.NEW_DEPARTMENT_ID, ''),
                 COALESCE(JT.NEW_CLASS_ID, ''),
