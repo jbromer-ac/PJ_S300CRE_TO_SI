@@ -147,6 +147,7 @@ static void RunTeardown(DatabaseConnection db, string databaseName)
         "[MAP].[T_TRANS_VENDOR]",
         "[MAP].[T_TRANS_COST_CODE]",
         "[MAP].[T_TRANS_COST_TYPE]",
+        "[MAP].[E_ACCT_TYPE]",
         "[MAP].[T_TRANS_BASEACCT]",
         "[MAP].[T_TRANS_ENTITY]",
         "[MAP].[T_TRANS_BATCH_COMBINE]",

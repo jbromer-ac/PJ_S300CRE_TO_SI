@@ -408,7 +408,7 @@ public class MainForm : Form
             {
                 "[MAP].[T_TRANS_DATA_FOLDER]", "[MAP].[T_TRANS_JOB]",    "[MAP].[T_TRANS_CUSTOMER]",
                 "[MAP].[T_TRANS_VENDOR]",      "[MAP].[T_TRANS_COST_CODE]", "[MAP].[T_TRANS_COST_TYPE]",
-                "[MAP].[T_TRANS_BASEACCT]",    "[MAP].[T_TRANS_ENTITY]", "[MAP].[T_TRANS_BATCH_COMBINE]",
+                "[MAP].[E_ACCT_TYPE]",         "[MAP].[T_TRANS_BASEACCT]",    "[MAP].[T_TRANS_ENTITY]", "[MAP].[T_TRANS_BATCH_COMBINE]",
                 "[MAP].[T_TRANS_EMPLOYEE]",    "[MAP].[T_STATE]",        "[MAP].[T_1099_TYPE]",
                 "[MAP].[T_TRANS_LOCATION]",    "[MAP].[T_TRANS_DEPARTMENT]", "[MAP].[E_USEFUL_FIELDS]",
                 "[MAP].[T_TRANS_CLASS]",       "[MAP].[T_TRANS_ITEM]",   "[MAP].[T_TRANS_WAREHOUSE]",
