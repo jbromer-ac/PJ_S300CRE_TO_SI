@@ -74,18 +74,20 @@ public class MappingApplier
                  .Equals("Hide", StringComparison.OrdinalIgnoreCase);
     }
 
+    private SqlTransaction? _tx;
+
     /// <summary>
-    /// Executes a parameterized SQL statement against the open connection.
+    /// Executes a parameterized SQL statement against the open connection, enlisting in the current transaction if active.
     /// </summary>
     private void Exec(string sql, params SqlParameter[] parameters)
     {
-        using var cmd = new SqlCommand(sql, _db.GetConnection());
+        using var cmd = new SqlCommand(sql, _db.GetConnection(), _tx);
         cmd.Parameters.AddRange(parameters);
         cmd.ExecuteNonQuery();
     }
 
     /// <summary>
-    /// Iterates data rows on a sheet, calling rowProcessor for each non-empty row.
+    /// Iterates data rows on a sheet inside a single transaction, calling rowProcessor for each non-empty row.
     /// rowProcessor returns (skip, execute) — if skip is true or execute is null,
     /// the row is counted as skipped. Otherwise execute() is called.
     /// </summary>
@@ -97,28 +99,44 @@ public class MappingApplier
         int executed = 0, skipped = 0, errors = 0;
         var lastRow = ws.LastRowUsed()?.RowNumber() ?? 0;
 
-        for (int row = dataStartRow; row <= lastRow; row++)
+        _tx = _db.GetConnection().BeginTransaction();
+        try
         {
-            if (ws.Row(row).IsEmpty()) continue;
-
-            try
+            for (int row = dataStartRow; row <= lastRow; row++)
             {
-                var (skip, execute) = rowProcessor(row);
+                if (ws.Row(row).IsEmpty()) continue;
 
-                if (skip || execute == null)
+                try
                 {
-                    skipped++;
-                    continue;
-                }
+                    var (skip, execute) = rowProcessor(row);
 
-                execute();
-                executed++;
+                    if (skip || execute == null)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    execute();
+                    executed++;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  ERROR row {row}: {ex.Message}");
+                    errors++;
+                }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"  ERROR row {row}: {ex.Message}");
-                errors++;
-            }
+
+            _tx.Commit();
+        }
+        catch
+        {
+            _tx.Rollback();
+            throw;
+        }
+        finally
+        {
+            _tx.Dispose();
+            _tx = null;
         }
 
         Console.WriteLine($"  {executed} executed, {skipped} skipped, {errors} errors.");
