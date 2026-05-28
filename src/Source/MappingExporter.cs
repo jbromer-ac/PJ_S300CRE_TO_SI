@@ -10,7 +10,8 @@ public class MappingExporter
     private static readonly XLColor BlueFont = XLColor.FromArgb(0, 0, 255);
 
     // LegacyColCount = 0 means no row-1 header section (Controls sheet)
-    private record SheetDef(string Name, int HeaderRow, int LegacyColCount, string[] Headers, string Sql);
+    // CenterCols = 1-based column numbers whose data cells should be center-aligned
+    private record SheetDef(string Name, int HeaderRow, int LegacyColCount, string[] Headers, string Sql, int[]? CenterCols = null);
 
     public MappingExporter(DatabaseConnection db)
     {
@@ -160,6 +161,14 @@ public class MappingExporter
             }
         }
 
+        // Center-align specified columns (header + data rows)
+        if (sheet.CenterCols != null && lastDataRow >= sheet.HeaderRow)
+        {
+            foreach (var col in sheet.CenterCols)
+                ws.Range(sheet.HeaderRow, col, lastDataRow, col)
+                  .Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        }
+
         ws.Columns().AdjustToContents();
 
         // Autofilter anchored to the header row
@@ -231,14 +240,22 @@ public class MappingExporter
         new SheetDef(
             Name: "GL Account",
             HeaderRow: 3,
-            LegacyColCount: 3,
-            Headers: ["Data Folder ID", "GL Account", "GL Account Description", "GL Account", "Map Type"],
+            LegacyColCount: 9,
+            Headers: ["Data Folder ID", "GL Account", "GL Account Description", "Statement", "Balance", "Closeable", "Acct Type", "Map Type", "Required", "GL Account", "Create/Merge", "QS Category"],
+            CenterCols: [4, 5, 6, 8, 9, 11],
             Sql: """
                 SELECT TBA.Data_Folder_Id,
                        TBA.Legacy_Base_Account,
-                       TBA.Note AS Description,
+                       TBA.Note,
+                       TBA.FIN_STMT,
+                       TBA.BALANCE,
+                       TBA.CLOSEABLE,
+                       TBA.ACCT_TYPE,
+                       TBA.ACCT_MATCH_TYPE,
+                       TBA.REQUIRED,
                        TBA.New_Base_Account,
-                       TBA.ACCT_MATCH_TYPE
+                       TBA.CMO,
+                       TBA.CATEGORY
                 FROM [MAP].[T_TRANS_BASEACCT] TBA
                 ORDER BY TBA.Data_Folder_Id, TBA.Legacy_Base_Account
                 """
