@@ -1,5 +1,6 @@
 using ClosedXML.Excel;
 using Microsoft.Data.SqlClient;
+using System.Data;
 
 namespace S300CRE_to_SI.Source;
 
@@ -63,9 +64,6 @@ public class MappingApplier
     private static int ToInt(string value) =>
         int.TryParse(value, out var i) ? i : 0;
 
-    /// <summary>
-    /// Returns true if the hide/show column (last column) equals "Hide".
-    /// </summary>
     private static bool IsHidden(IXLWorksheet ws, int row)
     {
         var lastCol = ws.LastColumnUsed()?.ColumnNumber() ?? 0;
@@ -74,23 +72,15 @@ public class MappingApplier
                  .Equals("Hide", StringComparison.OrdinalIgnoreCase);
     }
 
-    private SqlTransaction? _tx;
-
-    /// <summary>
-    /// Executes a parameterized SQL statement against the open connection, enlisting in the current transaction if active.
-    /// </summary>
+    /// Executes a single SQL statement immediately.
     private void Exec(string sql, params SqlParameter[] parameters)
     {
-        using var cmd = new SqlCommand(sql, _db.GetConnection(), _tx);
+        using var cmd = new SqlCommand(sql, _db.GetConnection());
         cmd.Parameters.AddRange(parameters);
         cmd.ExecuteNonQuery();
     }
 
-    /// <summary>
-    /// Iterates data rows on a sheet inside a single transaction, calling rowProcessor for each non-empty row.
-    /// rowProcessor returns (skip, execute) — if skip is true or execute is null,
-    /// the row is counted as skipped. Otherwise execute() is called.
-    /// </summary>
+    /// Used only for small/special sheets (Controls). Executes one UPDATE per row.
     private void ProcessRows(
         IXLWorksheet ws,
         int dataStartRow,
@@ -99,47 +89,108 @@ public class MappingApplier
         int executed = 0, skipped = 0, errors = 0;
         var lastRow = ws.LastRowUsed()?.RowNumber() ?? 0;
 
-        _tx = _db.GetConnection().BeginTransaction();
-        try
+        for (int row = dataStartRow; row <= lastRow; row++)
         {
-            for (int row = dataStartRow; row <= lastRow; row++)
+            if (ws.Row(row).IsEmpty()) continue;
+
+            try
             {
-                if (ws.Row(row).IsEmpty()) continue;
-
-                try
-                {
-                    var (skip, execute) = rowProcessor(row);
-
-                    if (skip || execute == null)
-                    {
-                        skipped++;
-                        continue;
-                    }
-
-                    execute();
-                    executed++;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"  ERROR row {row}: {ex.Message}");
-                    errors++;
-                }
+                var (skip, execute) = rowProcessor(row);
+                if (skip || execute == null) { skipped++; continue; }
+                execute();
+                executed++;
             }
-
-            _tx.Commit();
-        }
-        catch
-        {
-            _tx.Rollback();
-            throw;
-        }
-        finally
-        {
-            _tx.Dispose();
-            _tx = null;
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  ERROR row {row}: {ex.Message}");
+                errors++;
+            }
         }
 
         Console.WriteLine($"  {executed} executed, {skipped} skipped, {errors} errors.");
+    }
+
+    /// Reads a worksheet into a DataTable then bulk-updates the target table in 3 round-trips:
+    /// CREATE temp, SqlBulkCopy, UPDATE FROM join. Columns: (excelCol 1-based, dbColumnName, isKey).
+    /// The first key column is used for the "skip if empty" check.
+    /// valueTransform: optional (excelCol, rawValue) => transformedValue
+    private void BulkProcessSheet(
+        IXLWorksheet ws,
+        int dataStartRow,
+        string targetTable,
+        (int ExcelCol, string DbColumn, bool IsKey)[] columns,
+        Func<int, string, string>? valueTransform = null)
+    {
+        var dt = new DataTable();
+        foreach (var (_, dbCol, _) in columns)
+            dt.Columns.Add(dbCol, typeof(string));
+
+        var lastRow = ws.LastRowUsed()?.RowNumber() ?? 0;
+        int skipped = 0;
+        var firstKey = columns.First(c => c.IsKey);
+
+        for (int row = dataStartRow; row <= lastRow; row++)
+        {
+            if (ws.Row(row).IsEmpty()) continue;
+            if (IsHidden(ws, row)) { skipped++; continue; }
+            if (string.IsNullOrEmpty(Str(ws, row, firstKey.ExcelCol))) { skipped++; continue; }
+
+            var dr = dt.NewRow();
+            foreach (var (excelCol, dbCol, _) in columns)
+            {
+                var val = Str(ws, row, excelCol);
+                dr[dbCol] = valueTransform != null ? valueTransform(excelCol, val) : val;
+            }
+            dt.Rows.Add(dr);
+        }
+
+        Console.Write($"  {dt.Rows.Count} rows read, {skipped} skipped — updating... ");
+
+        if (dt.Rows.Count == 0)
+        {
+            Console.WriteLine("done.");
+            return;
+        }
+
+        var keyColumns   = columns.Where(c =>  c.IsKey).Select(c => c.DbColumn).ToArray();
+        var valueColumns = columns.Where(c => !c.IsKey).Select(c => c.DbColumn).ToArray();
+
+        int updated = BulkUpdate(targetTable, dt, keyColumns, valueColumns);
+        Console.WriteLine($"{updated} rows updated.");
+    }
+
+    private int BulkUpdate(string targetTable, DataTable data, string[] keyColumns, string[] updateColumns)
+    {
+        var conn    = _db.GetConnection();
+        var tmpName = $"#bu{Guid.NewGuid():N}";
+
+        var colDefs = string.Join(", ",
+            data.Columns.Cast<DataColumn>().Select(c => $"[{c.ColumnName}] NVARCHAR(500) NULL"));
+
+        using (var cmd = new SqlCommand($"CREATE TABLE {tmpName} ({colDefs})", conn))
+            cmd.ExecuteNonQuery();
+
+        try
+        {
+            using (var bc = new SqlBulkCopy(conn))
+            {
+                bc.DestinationTableName = tmpName;
+                bc.WriteToServer(data);
+            }
+
+            var set = string.Join(", ",    updateColumns.Select(c => $"t.[{c}] = s.[{c}]"));
+            var on  = string.Join(" AND ", keyColumns.Select(c => $"t.[{c}] = s.[{c}]"));
+
+            using var update = new SqlCommand(
+                $"UPDATE t SET {set} FROM {targetTable} AS t INNER JOIN {tmpName} AS s ON {on}",
+                conn);
+            return update.ExecuteNonQuery();
+        }
+        finally
+        {
+            using var drop = new SqlCommand($"DROP TABLE IF EXISTS {tmpName}", conn);
+            drop.ExecuteNonQuery();
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -150,14 +201,11 @@ public class MappingApplier
     {
         // Header: row 5 | Data: row 6+
         // Col A: FIELD_NAME | Col B: FIELD_VALUE
-        // No hide/show column on this sheet.
         ProcessRows(ws, dataStartRow: 6, row =>
         {
             var fieldName = Str(ws, row, 1);
             if (string.IsNullOrEmpty(fieldName)) return (skip: true, execute: null);
 
-            // Values for date fields are stored as Excel date serials.
-            // ClosedXML may return them as DateTime or as a number depending on cell format.
             string fieldValue;
             var cell = ws.Cell(row, 2);
             if (cell.DataType == XLDataType.DateTime)
@@ -185,42 +233,18 @@ public class MappingApplier
 
     private void ProcessEntity(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | C: NEW_ENTITY_ID
-        // D: PKG_BASE | E: PKG_CONSTR_SUM | F: PKG_CONSTR_DET
-        // G: PKG_PAYROLL (not in table — skipped)
-        // H: PKG_NPC_COMMIT | I: PKG_PC_COMMIT
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var newEntityId   = Str(ws, row, 3);
-            var pkgBase       = ToInt(Str(ws, row, 4));
-            var pkgConstrSum  = ToInt(Str(ws, row, 5));
-            var pkgConstrDet  = ToInt(Str(ws, row, 6));
-            var pkgNpcCommit  = ToInt(Str(ws, row, 8));
-            var pkgPcCommit   = ToInt(Str(ws, row, 9));
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_ENTITY]
-                       SET NEW_ENTITY_ID    = @newEntityId,
-                           PKG_BASE         = @pkgBase,
-                           PKG_CONSTR_SUM   = @pkgConstrSum,
-                           PKG_CONSTR_DET   = @pkgConstrDet,
-                           PKG_NPC_COMMIT   = @pkgNpcCommit,
-                           PKG_PC_COMMIT    = @pkgPcCommit
-                       WHERE DATA_FOLDER_ID = @dataFolderId",
-                    new SqlParameter("@newEntityId",   newEntityId),
-                    new SqlParameter("@pkgBase",       pkgBase),
-                    new SqlParameter("@pkgConstrSum",  pkgConstrSum),
-                    new SqlParameter("@pkgConstrDet",  pkgConstrDet),
-                    new SqlParameter("@pkgNpcCommit",  pkgNpcCommit),
-                    new SqlParameter("@pkgPcCommit",   pkgPcCommit),
-                    new SqlParameter("@dataFolderId",  dataFolderId)));
-        });
+        // A: DATA_FOLDER_ID(key) | C: NEW_ENTITY_ID | D: PKG_BASE | E: PKG_CONSTR_SUM
+        // F: PKG_CONSTR_DET | (G: PKG_PAYROLL — not in table, skipped) | H: PKG_NPC_COMMIT | I: PKG_PC_COMMIT
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_ENTITY]",
+        [
+            (1, "DATA_FOLDER_ID",  true),
+            (3, "NEW_ENTITY_ID",   false),
+            (4, "PKG_BASE",        false),
+            (5, "PKG_CONSTR_SUM",  false),
+            (6, "PKG_CONSTR_DET",  false),
+            (8, "PKG_NPC_COMMIT",  false),
+            (9, "PKG_PC_COMMIT",   false),
+        ]);
     }
 
     private void ProcessJobId(IXLWorksheet ws)
@@ -229,345 +253,141 @@ public class MappingApplier
         Console.WriteLine("  Resetting INCLUDE_JOB = 0 for all jobs...");
         Exec("UPDATE [MAP].[T_TRANS_JOB] SET INCLUDE_JOB = 0");
 
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
         // A: DATA_FOLDER_ID | B: LEGACY_JOB_ID | C: LEGACY_EXTRA_ID | D: Description
-        // E: Include? | F: NEW_JOB_ID | G: NEW_ENTITY_ID | H: NEW_DEPARTMENT_ID
+        // E: Include? (Yes→1, No→0) | F: NEW_JOB_ID | G: NEW_ENTITY_ID | H: NEW_DEPARTMENT_ID
         // I: NEW_CLASS_ID | J: NEW_CUSTOMER_ID | K: NEW_PM_ID
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId  = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyJobId   = Str(ws, row, 2);
-            if (string.IsNullOrEmpty(legacyJobId)) return (skip: true, execute: null);
-
-            var include       = Str(ws, row, 5);
-            var includeJob    = include.Equals("Yes", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
-
-            var legacyExtraId = Str(ws, row, 3);
-            var newJobId      = Str(ws, row, 6);
-            var newEntityId   = Str(ws, row, 7);
-            var newDeptId     = Str(ws, row, 8);
-            var newClassId    = Str(ws, row, 9);
-            var newCustomerId = Str(ws, row, 10);
-            var newPmId       = Str(ws, row, 11);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_JOB]
-                       SET NEW_JOB_ID        = @newJobId,
-                           INCLUDE_JOB       = @includeJob,
-                           NEW_ENTITY_ID     = @newEntityId,
-                           NEW_DEPARTMENT_ID = @newDeptId,
-                           NEW_CLASS_ID      = @newClassId,
-                           NEW_CUSTOMER_ID   = @newCustomerId,
-                           NEW_PM_ID         = @newPmId
-                       WHERE LEGACY_JOB_ID   = @legacyJobId
-                         AND LEGACY_EXTRA_ID = @legacyExtraId
-                         AND DATA_FOLDER_ID  = @dataFolderId",
-                    new SqlParameter("@newJobId",      newJobId),
-                    new SqlParameter("@includeJob",    includeJob),
-                    new SqlParameter("@newEntityId",   newEntityId),
-                    new SqlParameter("@newDeptId",     newDeptId),
-                    new SqlParameter("@newClassId",    newClassId),
-                    new SqlParameter("@newCustomerId", newCustomerId),
-                    new SqlParameter("@newPmId",       newPmId),
-                    new SqlParameter("@legacyJobId",   legacyJobId),
-                    new SqlParameter("@legacyExtraId", legacyExtraId),
-                    new SqlParameter("@dataFolderId",  dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_JOB]",
+        [
+            (1,  "DATA_FOLDER_ID",    true),
+            (2,  "LEGACY_JOB_ID",     true),
+            (3,  "LEGACY_EXTRA_ID",   true),
+            (5,  "INCLUDE_JOB",       false),
+            (6,  "NEW_JOB_ID",        false),
+            (7,  "NEW_ENTITY_ID",     false),
+            (8,  "NEW_DEPARTMENT_ID", false),
+            (9,  "NEW_CLASS_ID",      false),
+            (10, "NEW_CUSTOMER_ID",   false),
+            (11, "NEW_PM_ID",         false),
+        ],
+        valueTransform: (col, val) => col == 5
+            ? (val.Equals("Yes", StringComparison.OrdinalIgnoreCase) ? "1" : "0")
+            : val);
     }
 
     private void ProcessGLAccount(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // Legacy (cols 1-9): DATA_FOLDER_ID, Legacy GL Account, Note, FIN_STMT, BALANCE, CLOSEABLE, ACCT_TYPE, ACCT_MATCH_TYPE, REQUIRED
-        // New    (cols 10-12): New_Base_Account, CMO, CATEGORY
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyAcct = Str(ws, row, 2);
-            var newAcct    = Str(ws, row, 10);
-            var cmo        = Str(ws, row, 11);
-            var category   = Str(ws, row, 12);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_BASEACCT]
-                       SET New_Base_Account      = @newAcct,
-                           CMO                  = @cmo,
-                           CATEGORY             = @category
-                       WHERE Legacy_Base_Account = @legacyAcct
-                         AND Data_Folder_Id      = @dataFolderId",
-                    new SqlParameter("@newAcct",      newAcct),
-                    new SqlParameter("@cmo",          cmo),
-                    new SqlParameter("@category",     category),
-                    new SqlParameter("@legacyAcct",   legacyAcct),
-                    new SqlParameter("@dataFolderId", dataFolderId)));
-        });
+        // Legacy (cols 1-9): DATA_FOLDER_ID, Legacy GL Account, Note, FIN_STMT, BALANCE, CLOSEABLE, ACCT_TYPE, ACCT_MATCH_TYPE, REQUIRED — read-only reference
+        // New    (cols 10-12): New_Base_Account, CMO, CATEGORY — written back
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_BASEACCT]",
+        [
+            (1,  "Data_Folder_Id",      true),
+            (2,  "Legacy_Base_Account", true),
+            (10, "New_Base_Account",    false),
+            (11, "CMO",                 false),
+            (12, "CATEGORY",            false),
+        ]);
     }
 
     private void ProcessLocation(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Location | C: Description | D: New Location
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyLoc = Str(ws, row, 2);
-            var newLoc    = Str(ws, row, 4);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_LOCATION]
-                       SET New_Location_Id       = @newLoc
-                       WHERE Legacy_Location_Id  = @legacyLoc
-                         AND Data_Folder_Id      = @dataFolderId",
-                    new SqlParameter("@newLoc",       newLoc),
-                    new SqlParameter("@legacyLoc",    legacyLoc),
-                    new SqlParameter("@dataFolderId", dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_LOCATION]",
+        [
+            (1, "DATA_FOLDER_ID",     true),
+            (2, "LEGACY_LOCATION_ID", true),
+            (4, "NEW_LOCATION_ID",    false),
+        ]);
     }
 
     private void ProcessDepartment(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Department | C: Description | D: New Department
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyDept = Str(ws, row, 2);
-            var newDept    = Str(ws, row, 4);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_DEPARTMENT]
-                       SET New_Department_Id       = @newDept
-                       WHERE Legacy_Department_Id  = @legacyDept
-                         AND Data_Folder_Id        = @dataFolderId",
-                    new SqlParameter("@newDept",      newDept),
-                    new SqlParameter("@legacyDept",   legacyDept),
-                    new SqlParameter("@dataFolderId", dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_DEPARTMENT]",
+        [
+            (1, "DATA_FOLDER_ID",       true),
+            (2, "LEGACY_DEPARTMENT_ID", true),
+            (4, "NEW_DEPARTMENT_ID",    false),
+        ]);
     }
 
     private void ProcessClass(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Class | C: Description | D: New Class
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyClass = Str(ws, row, 2);
-            var newClass    = Str(ws, row, 4);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_CLASS]
-                       SET NEW_CLASS_ID        = @newClass
-                       WHERE LEGACY_CLASS_ID   = @legacyClass
-                         AND DATA_FOLDER_ID    = @dataFolderId",
-                    new SqlParameter("@newClass",     newClass),
-                    new SqlParameter("@legacyClass",  legacyClass),
-                    new SqlParameter("@dataFolderId", dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_CLASS]",
+        [
+            (1, "DATA_FOLDER_ID",  true),
+            (2, "LEGACY_CLASS_ID", true),
+            (4, "NEW_CLASS_ID",    false),
+        ]);
     }
 
     private void ProcessVendor(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Vendor | C: Description | D: New Vendor
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyVendor = Str(ws, row, 2);
-            var newVendor    = Str(ws, row, 4);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_VENDOR]
-                       SET NEW_VENDOR_ID        = @newVendor
-                       WHERE LEGACY_VENDOR_ID   = @legacyVendor
-                         AND DATA_FOLDER_ID     = @dataFolderId",
-                    new SqlParameter("@newVendor",    newVendor),
-                    new SqlParameter("@legacyVendor", legacyVendor),
-                    new SqlParameter("@dataFolderId", dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_VENDOR]",
+        [
+            (1, "DATA_FOLDER_ID",   true),
+            (2, "LEGACY_VENDOR_ID", true),
+            (4, "NEW_VENDOR_ID",    false),
+        ]);
     }
 
     private void ProcessCustomer(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Customer | C: Description | D: New Customer
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyCustomer = Str(ws, row, 2);
-            var newCustomer    = Str(ws, row, 4);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_CUSTOMER]
-                       SET NEW_CUSTOMER_ID        = @newCustomer
-                       WHERE LEGACY_CUSTOMER_ID   = @legacyCustomer
-                         AND DATA_FOLDER_ID       = @dataFolderId",
-                    new SqlParameter("@newCustomer",    newCustomer),
-                    new SqlParameter("@legacyCustomer", legacyCustomer),
-                    new SqlParameter("@dataFolderId",   dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_CUSTOMER]",
+        [
+            (1, "DATA_FOLDER_ID",     true),
+            (2, "LEGACY_CUSTOMER_ID", true),
+            (4, "NEW_CUSTOMER_ID",    false),
+        ]);
     }
 
     private void ProcessCostCode(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Cost Code | C: Description | D: New Cost Code | E: New Item ID
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId   = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyCostCode = Str(ws, row, 2);
-            var newCostCode    = Str(ws, row, 4);
-            var newItemId      = Str(ws, row, 5);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_COST_CODE]
-                       SET NEW_COST_CODE_ID       = @newCostCode,
-                           NEW_ITEM_ID            = @newItemId
-                       WHERE LEGACY_COST_CODE_ID  = @legacyCostCode
-                         AND DATA_FOLDER_ID       = @dataFolderId",
-                    new SqlParameter("@newCostCode",    newCostCode),
-                    new SqlParameter("@newItemId",      newItemId),
-                    new SqlParameter("@legacyCostCode", legacyCostCode),
-                    new SqlParameter("@dataFolderId",   dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_COST_CODE]",
+        [
+            (1, "DATA_FOLDER_ID",      true),
+            (2, "LEGACY_COST_CODE_ID", true),
+            (4, "NEW_COST_CODE_ID",    false),
+            (5, "NEW_ITEM_ID",         false),
+        ]);
     }
 
     private void ProcessCostType(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Cost Type | C: Description
-        // D: New Cost Type | E: New Item ID | F: New GL Account
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId   = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyCostType = Str(ws, row, 2);
-            var newCostType    = Str(ws, row, 4);
-            var newItemId      = Str(ws, row, 5);
-            var newGlAccount   = Str(ws, row, 6);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_COST_TYPE]
-                       SET NEW_COST_TYPE_ID        = @newCostType,
-                           NEW_ITEM_ID             = @newItemId,
-                           NEW_INTACCT_GL_ACCOUNT  = @newGlAccount
-                       WHERE LEGACY_COST_TYPE_ID   = @legacyCostType
-                         AND DATA_FOLDER_ID        = @dataFolderId",
-                    new SqlParameter("@newCostType",    newCostType),
-                    new SqlParameter("@newItemId",      newItemId),
-                    new SqlParameter("@newGlAccount",   newGlAccount),
-                    new SqlParameter("@legacyCostType", legacyCostType),
-                    new SqlParameter("@dataFolderId",   dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_COST_TYPE]",
+        [
+            (1, "DATA_FOLDER_ID",         true),
+            (2, "LEGACY_COST_TYPE_ID",    true),
+            (4, "NEW_COST_TYPE_ID",       false),
+            (5, "NEW_ITEM_ID",            false),
+            (6, "NEW_INTACCT_GL_ACCOUNT", false),
+        ]);
     }
 
     private void ProcessEmployee(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Employee | C: Description | D: New Employee
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyEmp = Str(ws, row, 2);
-            var newEmp    = Str(ws, row, 4);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_EMPLOYEE]
-                       SET NEW_EMPLOYEE_ID        = @newEmp
-                       WHERE LEGACY_EMPLOYEE_ID   = @legacyEmp
-                         AND DATA_FOLDER_ID       = @dataFolderId",
-                    new SqlParameter("@newEmp",       newEmp),
-                    new SqlParameter("@legacyEmp",    legacyEmp),
-                    new SqlParameter("@dataFolderId", dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_EMPLOYEE]",
+        [
+            (1, "DATA_FOLDER_ID",     true),
+            (2, "LEGACY_EMPLOYEE_ID", true),
+            (4, "NEW_EMPLOYEE_ID",    false),
+        ]);
     }
 
     private void ProcessInventoryItem(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Item | C: Description | D: New Item
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyItem = Str(ws, row, 2);
-            var newItem    = Str(ws, row, 4);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_ITEM]
-                       SET NEW_ITEM_ID        = @newItem
-                       WHERE LEGACY_ITEM_ID   = @legacyItem
-                         AND DATA_FOLDER_ID   = @dataFolderId",
-                    new SqlParameter("@newItem",      newItem),
-                    new SqlParameter("@legacyItem",   legacyItem),
-                    new SqlParameter("@dataFolderId", dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_ITEM]",
+        [
+            (1, "DATA_FOLDER_ID",  true),
+            (2, "LEGACY_ITEM_ID",  true),
+            (4, "NEW_ITEM_ID",     false),
+        ]);
     }
 
     private void ProcessWarehouse(IXLWorksheet ws)
     {
-        // Header: row 3 | Data: row 4+ | Last col: hide/show
-        // A: DATA_FOLDER_ID | B: Legacy Warehouse | C: Description | D: New Warehouse
-        ProcessRows(ws, dataStartRow: 4, row =>
-        {
-            if (IsHidden(ws, row)) return (skip: true, execute: null);
-
-            var dataFolderId    = Str(ws, row, 1);
-            if (string.IsNullOrEmpty(dataFolderId)) return (skip: true, execute: null);
-
-            var legacyWarehouse = Str(ws, row, 2);
-            var newWarehouse    = Str(ws, row, 4);
-
-            return (skip: false, execute: () =>
-                Exec(@"UPDATE [MAP].[T_TRANS_WAREHOUSE]
-                       SET NEW_WAREHOUSE_ID        = @newWarehouse
-                       WHERE LEGACY_WAREHOUSE_ID   = @legacyWarehouse
-                         AND DATA_FOLDER_ID        = @dataFolderId",
-                    new SqlParameter("@newWarehouse",    newWarehouse),
-                    new SqlParameter("@legacyWarehouse", legacyWarehouse),
-                    new SqlParameter("@dataFolderId",    dataFolderId)));
-        });
+        BulkProcessSheet(ws, dataStartRow: 4, "[MAP].[T_TRANS_WAREHOUSE]",
+        [
+            (1, "DATA_FOLDER_ID",      true),
+            (2, "LEGACY_WAREHOUSE_ID", true),
+            (4, "NEW_WAREHOUSE_ID",    false),
+        ]);
     }
 }
