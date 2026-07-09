@@ -324,7 +324,7 @@ public class MappingApplier
         [
             (1, "DATA_FOLDER_ID",   true),
             (2, "LEGACY_VENDOR_ID", true),
-            (4, "NEW_VENDOR_ID",    false),
+            (5, "NEW_VENDOR_ID",    false),
         ]);
     }
 
