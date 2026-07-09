@@ -312,10 +312,10 @@ public class MappingExporter
         new SheetDef(
             Name: "Customer ID",
             HeaderRow: 3,
-            LegacyColCount: 3,
-            Headers: ["Data Folder ID", "Customer", "Customer Description", "Customer"],
+            LegacyColCount: 4,
+            Headers: ["Data Folder ID", "Customer", "Customer Description", "Status", "Customer"],
             Sql: """
-                SELECT DATA_FOLDER_ID, LEGACY_CUSTOMER_ID, LEGACY_CUSTOMER_NAME, NEW_CUSTOMER_ID
+                SELECT DATA_FOLDER_ID, LEGACY_CUSTOMER_ID, LEGACY_CUSTOMER_NAME, LEGACY_CUSTOMER_STATUS, NEW_CUSTOMER_ID
                 FROM [MAP].[T_TRANS_CUSTOMER]
                 ORDER BY DATA_FOLDER_ID, LEGACY_CUSTOMER_ID
                 """
